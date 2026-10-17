@@ -1,2 +1,5 @@
 /sw/
 /tmp/
+
+# Arquivos gerados pelo PlatformIO
+**/.pio/
