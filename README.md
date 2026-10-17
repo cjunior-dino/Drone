@@ -2,14 +2,14 @@
 
 Projeto de estudo para desenvolver, por etapas, um controlador de voo baseado no ESP32-WROOM-32D. O estágio atual é exclusivamente de bancada: leitura da unidade inercial, recepção dos comandos do rádio e validação das rotinas de segurança.
 
-O firmware permanece sempre no estado `DISARMED` e não produz sinais para ESCs ou motores.
+O firmware possui uma máquina de estados de armamento apenas simulada e não produz sinais para ESCs ou motores. Mesmo no estado `SIM_ARMED`, `outputs_enabled` permanece em `0`.
 
 ## Segurança
 
 - Mantenha bateria LiPo, ESCs, motores e hélices desconectados durante os testes atuais.
 - Nunca conecte a bateria LiPo diretamente ao ESP32, ao receptor ou ao GY-521.
 - Use o LM2596 somente depois de ajustar e confirmar sua saída com um multímetro.
-- O estado `DISARMED` atual é fixo; ainda não existe rotina de armamento.
+- O armamento atual é somente uma simulação lógica; nenhuma saída física é habilitada.
 - Este protótipo ainda não está pronto para voo.
 
 ## Objetivo inicial
@@ -39,7 +39,10 @@ O firmware atual já executa:
 - failsafe após 100 ms sem pulso válido;
 - comandos normalizados de roll, pitch, throttle e yaw;
 - telemetria no monitor serial a 10 Hz;
-- estado permanente `DISARMED`, sem saída para ESC ou motor.
+- leitura da IMU, do receptor e normalização dos comandos separadas em módulos;
+- módulo de segurança com armamento e desarmamento simulados, temporizadores e bloqueio após failsafe;
+- contadores cumulativos de pulsos rejeitados, failsafe e recuperação do receptor;
+- `outputs_enabled` permanentemente em `0`, sem saída para ESC ou motor.
 
 ## Materiais usados nesta etapa
 
@@ -114,17 +117,64 @@ Os campos normalizados são:
 
 Roll, pitch e yaw possuem uma pequena zona morta ao redor do centro.
 
+## Máquina de estados simulada
+
+A lógica de armamento existe somente para testar as condições de segurança. Os estados são:
+
+- `DISARMED`: estado inicial e seguro;
+- `ARMING`: gesto de armamento sendo mantido;
+- `SIM_ARMED`: armamento lógico confirmado, ainda sem saídas físicas;
+- `DISARMING`: gesto de desarmamento sendo mantido;
+- `FAILSAFE_LOCKOUT`: bloqueio após perda do sinal do receptor.
+
+Para entrar em `SIM_ARMED`, o receptor deve estar válido, o throttle deve estar abaixo de 5%, roll e pitch devem estar centralizados e o yaw deve permanecer totalmente à direita por 1,5 segundo. Para desarmar, o throttle deve estar baixo e o yaw totalmente à esquerda por 1 segundo.
+
+Uma perda de sinal depois da aquisição válida leva imediatamente a `FAILSAFE_LOCKOUT`. Depois que o sinal retorna, throttle, roll, pitch e yaw devem permanecer em posição segura por 1 segundo para o sistema voltar a `DISARMED`. Não existe rearmamento automático.
+
+O campo `state_ms` da telemetria informa há quanto tempo o estado atual está ativo. O campo `outputs_enabled` permanece sempre em `0` nesta fase.
+
+### Diagnósticos do receptor
+
+A telemetria também informa:
+
+- `rx_reject_ch1` a `rx_reject_ch4`: pulsos descartados por estarem fora da faixa de 900 a 2.100 µs;
+- `rx_valid_ch1` a `rx_valid_ch4`: pulsos completos e válidos recebidos em cada canal;
+- `rx_short_ch1` a `rx_short_ch4`: pulsos completos abaixo de 900 µs;
+- `rx_long_ch1` a `rx_long_ch4`: pulsos completos acima de 2.100 µs;
+- `rx_orphan_ch1` a `rx_orphan_ch4`: bordas de descida detectadas sem uma borda de subida pendente;
+- `rx_failsafe_events`: perdas de sinal ocorridas depois que o receptor já havia ficado válido;
+- `rx_recovery_events`: recuperações posteriores a uma perda de sinal.
+
+Iniciar o ESP32 com o transmissor desligado não aumenta `rx_failsafe_events`. O contador cresce somente na transição de sinal válido para failsafe.
+
+Uma borda órfã não é interpretada como pulso nem altera os comandos. Esse diagnóstico permite separar transições incompletas de pulsos realmente fora da faixa aceita.
+
 ## Resultados dos testes
 
 - O failsafe foi acionado corretamente ao desligar o transmissor: `rx_ok:0` e comandos zerados.
 - A recepção voltou normalmente depois que o transmissor foi religado.
 - Os quatro comandos alcançaram aproximadamente suas faixas normalizadas completas.
 - Depois do ajuste que ignora pulsos fora da faixa já na interrupção, um teste com cinco movimentos completos de yaw registrou 323 amostras válidas e nenhuma amostra inválida.
+- Depois da modularização do receptor, um novo teste de roll registrou 223 amostras válidas, CH1 de 988 a 1.997 µs, `roll_cmd` de -1,000 a +0,994 e retorno ao centro em 1.494 µs.
+- O módulo de segurança foi validado com `state:DISARMED`, `outputs_enabled:0`, failsafe ativo e todos os canais e comandos zerados enquanto o transmissor estava desligado.
+- A sequência completa de aquisição, perda e recuperação do rádio foi validada: a primeira aquisição manteve `rx_failsafe_events:0` e `rx_recovery_events:0`; ao desligar o transmissor, os valores passaram para `rx_ok:0`, `rx_failsafe_events:1` e comandos zerados; depois de religá-lo, foram obtidos `rx_ok:1`, `rx_failsafe_events:1` e `rx_recovery_events:1`.
+- Durante essa sequência, o estado permaneceu `DISARMED` e `outputs_enabled:0` em todas as fases.
+- O diagnóstico detalhado registrou 13.008 pulsos válidos por canal com os manches parados, nenhum pulso curto ou longo e algumas bordas de descida incompletas, que foram descartadas sem afetar os comandos.
+- Depois de movimentar todos os manches até os extremos, os quatro canais continuaram sem pulsos curtos ou longos, sem failsafe e com retorno correto à posição segura.
+- Ao desligar o transmissor no teste detalhado, o firmware zerou novamente os canais, registrou exatamente um evento de failsafe e permaneceu sem pulsos curtos ou longos.
+- As bordas incompletas aparecem mesmo com os controles parados. Antes de habilitar saídas reais, o caminho de sinal com o BSS138 deverá ser validado com instrumentação adequada ou substituído por uma interface unidirecional apropriada.
+- Ligar o transmissor com os controles em posição segura manteve o estado `DISARMED`.
+- O gesto completo de yaw à direita com throttle baixo levou corretamente a `SIM_ARMED`, sempre com `outputs_enabled:0`.
+- Um gesto de armamento com duração inferior a 1,5 segundo foi cancelado e manteve `DISARMED`.
+- O armamento foi bloqueado com throttle em 15,3%, acima do limite configurado de 5%.
+- O gesto de yaw à esquerda com throttle baixo retornou corretamente de `SIM_ARMED` para `DISARMED`.
+- Ao desligar o transmissor durante `SIM_ARMED`, o estado mudou para `FAILSAFE_LOCKOUT`, os comandos foram zerados e as saídas permaneceram bloqueadas.
+- Após recuperar o sinal com os controles em posição segura, o estado voltou somente para `DISARMED`, sem rearmamento automático.
 
 Exemplo da saída serial:
 
 ```text
-state:DISARMED,rx_ok:1,ch1_us:1493,ch2_us:1495,ch3_us:1000,ch4_us:1496,roll_cmd:0.000,pitch_cmd:0.000,throttle_cmd:0.000,yaw_cmd:0.000
+state:DISARMED,state_ms:27443,outputs_enabled:0,rx_ok:1,ch1_us:1493,ch2_us:1495,ch3_us:1000,ch4_us:1496,roll_cmd:0.000,pitch_cmd:0.000,throttle_cmd:0.000,yaw_cmd:0.000,rx_reject_ch1:0,rx_reject_ch2:0,rx_reject_ch3:0,rx_reject_ch4:0,rx_failsafe_events:1,rx_recovery_events:1
 ```
 
 ## Estrutura do projeto
@@ -134,7 +184,15 @@ Drone/
 ├── firmware/
 │   └── fm/
 │       └── src/
-│           └── main.cpp
+│           ├── control_commands.cpp
+│           ├── control_commands.h
+│           ├── imu.cpp
+│           ├── imu.h
+│           ├── main.cpp
+│           ├── receiver.cpp
+│           ├── receiver.h
+│           ├── safety.cpp
+│           └── safety.h
 ├── assets/
 ├── platformio.ini
 ├── .gitignore
@@ -180,7 +238,7 @@ Somente um programa pode usar a porta COM4 por vez. Feche o monitor serial com `
 
 - não há definição de pinos de ESC;
 - não há geração de PWM ou DShot;
-- não há rotina de armamento;
+- não há armamento real; a máquina de estados atual é apenas uma simulação sem saídas;
 - não há mixer de quadricóptero;
 - não há controle PID;
 - o GY-521 ainda está montado verticalmente;
@@ -189,13 +247,11 @@ Somente um programa pode usar a porta COM4 por vez. Feche o monitor serial com `
 
 ## Próximas etapas planejadas
 
-1. separar o firmware em módulos de IMU, receptor, comandos e segurança;
-2. adicionar diagnósticos cumulativos de pulsos rejeitados e eventos de failsafe;
-3. criar uma máquina de estados de armamento apenas simulada, sem saídas físicas;
-4. corrigir a montagem do GY-521 e validar a orientação dos eixos;
-5. implementar mixer e PID inicialmente apenas como valores de diagnóstico;
-6. identificar as especificações dos ESCs;
-7. somente depois das validações anteriores, testar um ESC e um motor sem hélice, com desligamento de emergência preparado.
+1. validar com instrumentação adequada ou substituir a interface BSS138 antes de habilitar saídas reais;
+2. corrigir a montagem do GY-521 e validar a orientação dos eixos;
+3. implementar mixer e PID inicialmente apenas como valores de diagnóstico;
+4. identificar as especificações dos ESCs;
+5. somente depois das validações anteriores, testar um ESC e um motor sem hélice, com desligamento de emergência preparado.
 
 ## Projetos de referência
 
