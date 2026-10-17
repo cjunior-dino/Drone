@@ -71,7 +71,9 @@ bool readRegister(uint8_t reg, uint8_t &value) {
     return false;
   }
 
-  if (Wire.requestFrom(mpuAddress, static_cast<uint8_t>(1), true) != 1) {
+  constexpr size_t kRegisterBytesToRead = 1;
+  if (Wire.requestFrom(mpuAddress, kRegisterBytesToRead, true) !=
+      kRegisterBytesToRead) {
     return false;
   }
 
@@ -86,13 +88,13 @@ bool readImu(ImuRaw &sample) {
     return false;
   }
 
-  constexpr uint8_t kBytesToRead = 14;
+  constexpr size_t kBytesToRead = 14;
   if (Wire.requestFrom(mpuAddress, kBytesToRead, true) != kBytesToRead) {
     return false;
   }
 
   uint8_t data[kBytesToRead];
-  for (uint8_t index = 0; index < kBytesToRead; ++index) {
+  for (size_t index = 0; index < kBytesToRead; ++index) {
     data[index] = Wire.read();
   }
 

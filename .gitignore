@@ -3,3 +3,6 @@
 
 # Arquivos gerados pelo PlatformIO
 **/.pio/
+
+# Configuracoes locais do Visual Studio Code
+**/.vscode/
