@@ -2,7 +2,9 @@
 /tmp/
 
 # Arquivos gerados pelo PlatformIO
+/.pio/
 **/.pio/
 
 # Configuracoes locais do Visual Studio Code
+/.vscode/
 **/.vscode/
