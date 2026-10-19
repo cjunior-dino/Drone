@@ -1,15 +1,17 @@
 # Drone experimental com ESP32
 
-Projeto de estudo para desenvolver, por etapas, um controlador de voo baseado no ESP32-WROOM-32D. O estágio atual é exclusivamente de bancada: leitura da unidade inercial, recepção dos comandos do rádio e validação das rotinas de segurança.
+Projeto de estudo para desenvolver, por etapas, um controlador de voo baseado no ESP32-WROOM-32D. O estágio atual é exclusivamente de bancada: leitura da unidade inercial, recepção dos comandos do rádio, validação das rotinas de segurança e acionamento limitado de um único ESC e motor sem hélice.
 
-O firmware possui uma máquina de estados de armamento apenas simulada e não produz sinais para ESCs ou motores. Mesmo no estado `SIM_ARMED`, `outputs_enabled` permanece em `0`.
+O firmware produz PWM para somente um ESC no GPIO32. A saída física só é habilitada no estado `BENCH_ARMED` e está limitada por software à faixa de 1.000 a 1.100 µs. Um movimento deliberado acima de 4% do throttle aplica o pulso inicial de 1.070 µs; depois disso, a subida é gradual. A redução e a parada são imediatas. Essa configuração serve apenas para testes controlados de bancada e ainda não constitui um controlador de voo.
 
 ## Segurança
 
-- Mantenha bateria LiPo, ESCs, motores e hélices desconectados durante os testes atuais.
+- Remova todas as hélices antes de qualquer teste de bancada.
+- Mantenha a bateria LiPo desconectada durante montagem, programação e conferência das ligações.
 - Nunca conecte a bateria LiPo diretamente ao ESP32, ao receptor ou ao GY-521.
 - Use o LM2596 somente depois de ajustar e confirmar sua saída com um multímetro.
-- O armamento atual é somente uma simulação lógica; nenhuma saída física é habilitada.
+- O ESC usa alimentação própria pela LiPo; ESP32 e receptor permanecem alimentados pelo USB nesta etapa.
+- A saída atual controla somente um motor e possui limite rígido de 1.100 µs.
 - Este protótipo ainda não está pronto para voo.
 
 ## Objetivo inicial
@@ -20,7 +22,7 @@ Construir uma base confiável para:
 2. receber os quatro canais principais do FlySky FS-i6;
 3. detectar perda ou corrupção do sinal do receptor;
 4. converter os comandos do rádio para valores normalizados;
-5. preparar, em etapas futuras, mixer, controle PID e saídas para os ESCs.
+5. validar com segurança a saída para um ESC antes de implementar mixer e controle PID.
 
 ## Etapa validada em bancada
 
@@ -40,9 +42,13 @@ O firmware atual já executa:
 - comandos normalizados de roll, pitch, throttle e yaw;
 - telemetria no monitor serial a 10 Hz;
 - leitura da IMU, do receptor e normalização dos comandos separadas em módulos;
-- módulo de segurança com armamento e desarmamento simulados, temporizadores e bloqueio após failsafe;
+- módulo de segurança com armamento e desarmamento de bancada, temporizadores e bloqueio após failsafe;
 - contadores cumulativos de pulsos rejeitados, failsafe e recuperação do receptor;
-- `outputs_enabled` permanentemente em `0`, sem saída para ESC ou motor.
+- PWM de 50 Hz para um ESC no GPIO32;
+- faixa física limitada a 1.000–1.100 µs;
+- partida em 1.070 µs quando o throttle ultrapassa 4%, com parada abaixo de 2%;
+- rampa de subida limitada a 20 µs por segundo;
+- redução de potência, desarme, failsafe e erro aplicados imediatamente em 1.000 µs.
 
 ## Materiais usados nesta etapa
 
@@ -52,9 +58,28 @@ O firmware atual já executa:
 - receptor FlySky FS-iA6;
 - conversor de nível lógico BSS138 de quatro canais;
 - protoboard e cabos de conexão;
-- cabo USB para alimentação e programação.
+- cabo USB para alimentação e programação;
+- um ESC de 30 A;
+- um motor A2212/6T 2200KV, testado sem hélice;
+- bateria LiPo 3S 2.200 mAh para alimentação exclusiva do ESC.
 
-Também estão disponíveis para etapas futuras quatro motores A2212/6T 2200KV, ESCs, placa de distribuição, bateria LiPo 3S 2200 mAh e conversor LM2596. Esses componentes não fazem parte do teste atual.
+Também estão disponíveis para etapas futuras os outros três motores e ESCs, a placa de distribuição e o conversor LM2596. Eles ainda não foram integrados.
+
+## Diagrama de montagem
+
+![Diagrama das conexões de bancada do ESP32, GY-521, ESC, receptor e conversor de nível](diagrama-montagem-drone.png)
+
+## Ligação do ESC e Motor 1
+
+| ESC | Destino |
+| --- | --- |
+| fio fino branco, sinal | GPIO32 |
+| fio fino preto, GND | GND do ESP32 |
+| fio fino vermelho, BEC 5 V | isolado e não conectado |
+| fios grossos vermelho e preto | bateria LiPo, somente durante o teste |
+| três fios azuis | três fases do motor |
+
+O sentido de rotação ainda não é definitivo. Para invertê-lo futuramente, basta trocar entre si dois dos três fios de fase, sempre com a bateria desconectada.
 
 ## Ligações do GY-521
 
@@ -117,21 +142,21 @@ Os campos normalizados são:
 
 Roll, pitch e yaw possuem uma pequena zona morta ao redor do centro.
 
-## Máquina de estados simulada
+## Máquina de estados de bancada
 
-A lógica de armamento existe somente para testar as condições de segurança. Os estados são:
+A lógica de armamento controla a saída física limitada do Motor 1. Os estados são:
 
 - `DISARMED`: estado inicial e seguro;
 - `ARMING`: gesto de armamento sendo mantido;
-- `SIM_ARMED`: armamento lógico confirmado, ainda sem saídas físicas;
+- `BENCH_ARMED`: saída física do Motor 1 habilitada dentro do limite de bancada;
 - `DISARMING`: gesto de desarmamento sendo mantido;
 - `FAILSAFE_LOCKOUT`: bloqueio após perda do sinal do receptor.
 
-Para entrar em `SIM_ARMED`, o receptor deve estar válido, o throttle deve estar abaixo de 5%, roll e pitch devem estar centralizados e o yaw deve permanecer totalmente à direita por 1,5 segundo. Para desarmar, o throttle deve estar baixo e o yaw totalmente à esquerda por 1 segundo.
+Para entrar em `BENCH_ARMED`, o receptor deve estar válido, o throttle deve estar abaixo de 2%, roll e pitch devem estar centralizados e o yaw deve permanecer totalmente à direita por 1,5 segundo. Para desarmar, o throttle deve estar baixo e o yaw totalmente à esquerda por 1 segundo.
 
 Uma perda de sinal depois da aquisição válida leva imediatamente a `FAILSAFE_LOCKOUT`. Depois que o sinal retorna, throttle, roll, pitch e yaw devem permanecer em posição segura por 1 segundo para o sistema voltar a `DISARMED`. Não existe rearmamento automático.
 
-O campo `state_ms` da telemetria informa há quanto tempo o estado atual está ativo. O campo `outputs_enabled` permanece sempre em `0` nesta fase.
+O campo `state_ms` da telemetria informa há quanto tempo o estado atual está ativo. `outputs_enabled` e `motor1_drive` só valem `1` em `BENCH_ARMED` com sinal válido. `motor1_us` informa o pulso aplicado e `motor1_limit_us` mostra o limite rígido de 1.100 µs.
 
 ### Diagnósticos do receptor
 
@@ -164,11 +189,14 @@ Uma borda órfã não é interpretada como pulso nem altera os comandos. Esse di
 - Ao desligar o transmissor no teste detalhado, o firmware zerou novamente os canais, registrou exatamente um evento de failsafe e permaneceu sem pulsos curtos ou longos.
 - As bordas incompletas aparecem mesmo com os controles parados. Antes de habilitar saídas reais, o caminho de sinal com o BSS138 deverá ser validado com instrumentação adequada ou substituído por uma interface unidirecional apropriada.
 - Ligar o transmissor com os controles em posição segura manteve o estado `DISARMED`.
-- O gesto completo de yaw à direita com throttle baixo levou corretamente a `SIM_ARMED`, sempre com `outputs_enabled:0`.
+- O gesto completo de yaw à direita com throttle baixo levou corretamente a `BENCH_ARMED`.
 - Um gesto de armamento com duração inferior a 1,5 segundo foi cancelado e manteve `DISARMED`.
-- O armamento foi bloqueado com throttle em 15,3%, acima do limite configurado de 5%.
-- O gesto de yaw à esquerda com throttle baixo retornou corretamente de `SIM_ARMED` para `DISARMED`.
-- Ao desligar o transmissor durante `SIM_ARMED`, o estado mudou para `FAILSAFE_LOCKOUT`, os comandos foram zerados e as saídas permaneceram bloqueadas.
+- O armamento foi bloqueado com throttle em 15,3%. O limite seguro atual é 2%.
+- O gesto de yaw à esquerda com throttle baixo retornou corretamente de `BENCH_ARMED` para `DISARMED` e aplicou 1.000 µs.
+- O limite rígido foi validado com throttle máximo: `motor1_us:1100` e `motor1_limit_us:1100`.
+- No teste físico sem hélice, o motor começou a girar em baixa velocidade com aproximadamente `ch3_us:1640`, `throttle_cmd:0.640` e `motor1_us:1064`.
+- Com base nesse resultado, a curva de bancada passou a aplicar 1.070 µs assim que o throttle ultrapassa 4%, mantendo 1.000 µs no mínimo e o teto de 1.100 µs.
+- Ao desligar o transmissor com o motor girando, o estado mudou para `FAILSAFE_LOCKOUT`, `rx_ok` passou para `0`, a saída caiu para 1.000 µs e o motor parou.
 - Após recuperar o sinal com os controles em posição segura, o estado voltou somente para `DISARMED`, sem rearmamento automático.
 
 Exemplo da saída serial:
@@ -189,6 +217,8 @@ Drone/
 │           ├── imu.cpp
 │           ├── imu.h
 │           ├── main.cpp
+│           ├── motor_output.cpp
+│           ├── motor_output.h
 │           ├── receiver.cpp
 │           ├── receiver.h
 │           ├── safety.cpp
@@ -223,35 +253,38 @@ Se o PowerShell não encontrar `pio`, use o executável instalado no perfil do u
 
 Somente um programa pode usar a porta COM4 por vez. Feche o monitor serial com `Ctrl+C` antes de gravar um novo firmware.
 
-## Procedimento atual de bancada
+## Procedimento atual de bancada com um motor
 
-1. Confirme que bateria, ESCs, motores e hélices estão desconectados.
-2. Confira todas as ligações com o USB desconectado.
-3. Ligue o transmissor e deixe o throttle na posição mínima.
-4. Conecte o ESP32 ao USB.
-5. Abra o monitor serial em 115200 baud.
-6. Confirme `state:DISARMED` e `rx_ok:1`.
-7. Movimente um controle por vez e confira o campo correspondente.
-8. Ao terminar, feche o monitor e desconecte o USB.
+1. Remova a hélice e fixe firmemente motor e estrutura.
+2. Com USB e LiPo desconectados, confira todas as ligações.
+3. Ligue o transmissor com throttle baixo e demais comandos centralizados.
+4. Conecte o ESP32 ao USB e abra o monitor serial em 115200 baud.
+5. Confirme `state:DISARMED`, `rx_ok:1` e `motor1_us:1000`.
+6. Conecte a LiPo ao ESC e aguarde a sequência de inicialização.
+7. Arme mantendo yaw à direita por 1,5 segundo, sem aumentar o throttle.
+8. Confirme `state:BENCH_ARMED` e aumente o throttle lentamente, mantendo distância do motor.
+9. Para interromper, baixe imediatamente o throttle e desarme com yaw à esquerda.
+10. Desconecte primeiro a LiPo do ESC e depois o USB.
 
 ## Limitações atuais
 
-- não há definição de pinos de ESC;
-- não há geração de PWM ou DShot;
-- não há armamento real; a máquina de estados atual é apenas uma simulação sem saídas;
+- há saída PWM somente para um ESC; os outros três motores não estão conectados;
+- o firmware usa PWM de 50 Hz e ainda não implementa DShot;
 - não há mixer de quadricóptero;
 - não há controle PID;
 - o GY-521 ainda está montado verticalmente;
-- o modelo e as especificações exatas dos ESCs ainda precisam ser confirmados;
-- a alimentação pela LiPo e pelo LM2596 ainda não foi integrada ao teste.
+- o modelo exato do ESC ainda precisa ser confirmado;
+- o LM2596 e a placa de distribuição ainda não foram integrados;
+- não há medição de tensão/corrente da bateria nem telemetria do ESC.
 
 ## Próximas etapas planejadas
 
-1. validar com instrumentação adequada ou substituir a interface BSS138 antes de habilitar saídas reais;
-2. corrigir a montagem do GY-521 e validar a orientação dos eixos;
-3. implementar mixer e PID inicialmente apenas como valores de diagnóstico;
-4. identificar as especificações dos ESCs;
-5. somente depois das validações anteriores, testar um ESC e um motor sem hélice, com desligamento de emergência preparado.
+1. corrigir a montagem do GY-521 e validar a orientação dos eixos;
+2. confirmar o modelo e as especificações dos ESCs;
+3. definir a arquitetura de alimentação definitiva e validá-la com multímetro;
+4. implementar mixer para quatro motores inicialmente apenas como diagnóstico;
+5. implementar e validar PID sem hélices;
+6. repetir as validações de segurança antes de qualquer ensaio de sustentação.
 
 ## Projetos de referência
 

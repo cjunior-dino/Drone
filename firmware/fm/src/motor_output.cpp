@@ -9,11 +9,15 @@ constexpr uint32_t kPwmFrequencyHz = 50;
 constexpr uint8_t kPwmResolutionBits = 16;
 constexpr uint32_t kPwmPeriodUs = 1000000UL / kPwmFrequencyHz;
 constexpr uint16_t kMinimumPulseUs = 1000;
+constexpr uint16_t kMotorStartPulseUs = 1070;
 constexpr uint16_t kBenchLimitPulseUs = 1100;
+constexpr float kMotorStartThrottle = 0.04f;
+constexpr float kMotorStopThrottle = 0.02f;
 constexpr float kRampUpUsPerSecond = 20.0f;
 
 bool initialized = false;
 bool driveEnabled = false;
+bool motorRunning = false;
 float requestedThrottle = 0.0f;
 float currentPulseUs = static_cast<float>(kMinimumPulseUs);
 
@@ -55,6 +59,7 @@ void update(bool outputEnabled, bool receiverSignalValid,
   driveEnabled = initialized && outputEnabled && receiverSignalValid;
 
   if (!driveEnabled) {
+    motorRunning = false;
     currentPulseUs = static_cast<float>(kMinimumPulseUs);
     if (initialized) {
       writePulseUs(kMinimumPulseUs);
@@ -62,10 +67,33 @@ void update(bool outputEnabled, bool receiverSignalValid,
     return;
   }
 
+  if (!motorRunning) {
+    if (requestedThrottle <= kMotorStartThrottle) {
+      currentPulseUs = static_cast<float>(kMinimumPulseUs);
+      writePulseUs(kMinimumPulseUs);
+      return;
+    }
+
+    // O ESC testado so iniciou o motor perto de 1064 us. O pequeno salto
+    // garante a partida assim que o throttle sai deliberadamente do minimo.
+    motorRunning = true;
+    currentPulseUs = static_cast<float>(kMotorStartPulseUs);
+  } else if (requestedThrottle <= kMotorStopThrottle) {
+    // A parada continua imediata e a histerese evita oscilacao por ruido.
+    motorRunning = false;
+    currentPulseUs = static_cast<float>(kMinimumPulseUs);
+    writePulseUs(kMinimumPulseUs);
+    return;
+  }
+
+  const float activeThrottle =
+      clamp((requestedThrottle - kMotorStartThrottle) /
+                (1.0f - kMotorStartThrottle),
+            0.0f, 1.0f);
   const float targetPulseUs =
-      static_cast<float>(kMinimumPulseUs) +
-      requestedThrottle *
-          static_cast<float>(kBenchLimitPulseUs - kMinimumPulseUs);
+      static_cast<float>(kMotorStartPulseUs) +
+      activeThrottle *
+          static_cast<float>(kBenchLimitPulseUs - kMotorStartPulseUs);
 
   if (targetPulseUs <= currentPulseUs) {
     // Reducoes de potencia sao aplicadas imediatamente.
@@ -83,6 +111,7 @@ void update(bool outputEnabled, bool receiverSignalValid,
 
 void emergencyStop() {
   driveEnabled = false;
+  motorRunning = false;
   requestedThrottle = 0.0f;
   currentPulseUs = static_cast<float>(kMinimumPulseUs);
   if (initialized) {

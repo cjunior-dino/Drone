@@ -7,7 +7,7 @@
 namespace safety {
 namespace {
 
-constexpr float kMaximumSafeThrottle = 0.05f;
+constexpr float kMaximumSafeThrottle = 0.02f;
 constexpr float kMaximumCenteredCommand = 0.15f;
 constexpr float kArmYawThreshold = 0.80f;
 constexpr float kDisarmYawThreshold = -0.80f;
